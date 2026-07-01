@@ -1,0 +1,4 @@
+interface:
+  display_name: "Course Material DOCX Extractor"
+  short_description: "Extract structured course-material CSV from DOCX"
+  default_prompt: "Use $course-material-docx-extractor to extract a course-material CSV from this .docx file."

@@ -59,12 +59,14 @@ The splitter recognizes these headings:
 
 The LLM receives the structure type, title hint, age hint, and verbatim source material.
 
+Before task generation, the splitter removes a trailing Coze disclosure line when a section ends with text such as `本内容由 Coze AI 生成...`. The LLM should preserve the cleaned `素材原文` exactly.
+
 ## LLM Rules
 
 The prompt in `llm_tasks.jsonl` instructs the LLM to:
 
 - output JSON only
-- preserve `素材原文` exactly
+- preserve the cleaned `素材原文` exactly
 - extract or infer `场景`、`主角`、`主题`、`标签`、`年龄段`、`适合产品`、`摘要`
 - output `manual_review` when key information is unclear
 - avoid generating `检索文本`; the validator builds it

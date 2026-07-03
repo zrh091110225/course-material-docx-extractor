@@ -55,6 +55,8 @@ This writes:
 - `llm_prompt.md`: reusable prompt template.
 - `llm_results.jsonl`: empty file to fill with LLM results.
 
+If a material section ends with a Coze disclosure line such as `本内容由 Coze AI 生成...`, the splitter removes that line before writing tasks. The LLM should preserve the cleaned `素材原文` exactly.
+
 ## Step 2: Fill LLM Results
 
 For each line in `llm_tasks.jsonl`, send the `prompt` value to an LLM.
@@ -133,7 +135,7 @@ P1. 跳跳和他的恐龙——"你是想听我的想法,还是恐龙的想法?"
 Successful rows are rejected into manual review when:
 
 - required fields are empty
-- `素材原文` is not an exact match for the original task text
+- `素材原文` is not an exact match for the cleaned task text
 - `年龄段` contains values outside the allowed list
 - `适合产品` contains values outside the allowed list
 - the result is malformed, missing, or marked `manual_review`

@@ -37,6 +37,7 @@ ALLOWED_AGES = {
     "7-9岁",
     "9-11岁",
 }
+AGE_ORDER = ["3-4岁", "4-5岁", "5-6岁", "6-7岁", "5-7岁", "7-8岁", "7-9岁", "9-11岁"]
 
 ALLOWED_PRODUCTS = {
     "线下会员新班",
@@ -46,6 +47,7 @@ ALLOWED_PRODUCTS = {
 }
 
 WORD_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+FIELD_LABELS = "素材瞬间|为什么有潜力|待补访|可服务的主题|场景|主角|主题|标签"
 
 
 @dataclass
@@ -77,8 +79,15 @@ def read_docx_paragraphs(path: Path) -> list[str]:
                 parts.append("\t")
             elif tag in {"br", "cr"}:
                 parts.append("\n")
-        paragraphs.append(normalize_text("".join(parts)))
+        paragraphs.extend(split_embedded_fields(normalize_text("".join(parts))))
     return paragraphs
+
+
+def split_embedded_fields(text: str) -> list[str]:
+    if not text:
+        return [text]
+    text = re.sub(rf"\s+({FIELD_LABELS})\s*[:：]", r"\n\1:", text)
+    return [part.strip() for part in text.split("\n")]
 
 
 def normalize_text(text: str) -> str:
@@ -109,13 +118,14 @@ def clean_lines(lines: list[str]) -> list[str]:
 
 def normalize_title(heading: str) -> str:
     title = re.sub(r"^\d+\.\s*", "", heading.strip())
+    title = re.sub(r"^P\d+\.\s*", "", title)
     title = re.sub(r"^[A-Z]\.\s*", "", title)
     return normalize_text(title)
 
 
 def infer_age(path: Path, explicit_age: str | None) -> str:
     if explicit_age:
-        return explicit_age
+        return normalize_multivalue(explicit_age)
 
     candidates = [
         r"(\d-\d)岁",
@@ -129,14 +139,67 @@ def infer_age(path: Path, explicit_age: str | None) -> str:
     return ""
 
 
+def normalize_multivalue(value: str) -> str:
+    parts = [part.strip() for part in re.split(r"[；;/,，、\s]+", value) if part.strip()]
+    return order_age_values(list(dict.fromkeys(parts)))
+
+
+def order_age_values(values: list[str]) -> str:
+    unique_values = list(dict.fromkeys(values))
+    ordered = [age for age in AGE_ORDER if age in unique_values]
+    ordered.extend(age for age in unique_values if age not in ordered)
+    return "；".join(ordered)
+
+
+def validate_age_field(value: str) -> bool:
+    values = [part for part in value.split("；") if part]
+    return bool(values) and all(part in ALLOWED_AGES for part in values)
+
+
+def infer_age_from_section(section: Section, default_age: str) -> str:
+    if default_age:
+        return default_age
+
+    text = material_text(section)
+    ages: list[str] = []
+    explicit_ranges = re.findall(r"(\d-\d)\s*岁", text)
+    for age_range in explicit_ranges:
+        age = f"{age_range}岁"
+        if age in ALLOWED_AGES:
+            ages.append(age)
+
+    single_ages = re.findall(r"(?<![-\d])([3-9])\s*岁", text)
+    for raw_age in single_ages:
+        age_num = int(raw_age)
+        if 3 <= age_num <= 4:
+            ages.append("3-4岁")
+        elif age_num == 5:
+            ages.append("5-6岁")
+        elif age_num == 6:
+            ages.append("5-6岁")
+        elif age_num == 7:
+            ages.append("7-8岁")
+        elif age_num == 8:
+            ages.append("7-8岁")
+        elif age_num in {9, 10, 11}:
+            ages.append("9-11岁")
+
+    if section.section_kind == "lettered_growth" and ("三年" in text or "三年" in section.heading):
+        ages.extend(["3-4岁", "4-5岁", "5-6岁"])
+
+    return order_age_values([age for age in ages if age in ALLOWED_AGES])
+
+
 def split_sections(paragraphs: list[str], path: Path) -> list[Section]:
     starts: list[tuple[int, str, str]] = []
     for idx, paragraph in enumerate(paragraphs):
         stripped = paragraph.strip()
         if re.match(r"^\d+\.\s+", stripped):
-            starts.append((idx, stripped, "numbered"))
+            starts.append((idx, stripped, "numbered_card"))
+        elif re.match(r"^P\d+\.\s+", stripped):
+            starts.append((idx, stripped, "potential"))
         elif re.match(r"^[A-Z]\.\s+", stripped):
-            starts.append((idx, stripped, "lettered"))
+            starts.append((idx, stripped, "lettered_growth"))
 
     sections: list[Section] = []
     for pos, (start_idx, heading, kind) in enumerate(starts):
@@ -163,11 +226,31 @@ def normalize_tags(tag_line: str) -> str:
     return "；".join(part.strip() for part in re.split(r"[；;，,、\s]+", tag_line) if part.strip())
 
 
+def normalize_topic_tags(topic_line: str) -> str:
+    labels: list[str] = []
+    for part in re.split(r"[/；;，,、]", topic_line):
+        label = re.sub(r"\s+", "", part.strip())
+        if not label:
+            continue
+        label = label.replace('"', "")
+        if len(label) > 18:
+            label = label[:18]
+        labels.append("#" + label.lstrip("#"))
+    return "；".join(dict.fromkeys(labels))
+
+
 def summarize(lines: list[str], title: str) -> str:
+    moment = extract_field(lines, "素材瞬间")
+    potential = extract_field(lines, "为什么有潜力")
+    if moment or potential:
+        summary_text = " ".join(part for part in [moment, potential] if part)
+        sentences = re.split(r"(?<=[。！？!?])\s*", summary_text)
+        return "".join(sentences[:2]).strip()[:180]
+
     body_lines = [
         line
         for line in lines[1:]
-        if not re.match(r"^\s*\**(场景|主角|主题|标签)\**\s*[:：]", line)
+        if not re.match(r"^\s*\**(场景|主角|主题|标签|素材瞬间|为什么有潜力|待补访|可服务的主题)\**\s*[:：]", line)
     ]
     body = " ".join(line for line in body_lines if line).strip()
     if not body:
@@ -178,6 +261,83 @@ def summarize(lines: list[str], title: str) -> str:
     if summary:
         return summary[:180]
     return f"{title}：{body[:160]}".strip()
+
+
+def extract_named_characters(text: str, title: str) -> str:
+    names: list[str] = []
+    title_prefix = re.split(r"这三年|和|——|-", title, maxsplit=1)[0].strip()
+    if title_prefix and 1 <= len(title_prefix) <= 8:
+        names.append(title_prefix)
+
+    known_names = [
+        "年糕",
+        "跳跳",
+        "柚子",
+        "月月",
+        "月玥",
+        "小番茄",
+        "瑞瑞",
+        "开开",
+        "Luca",
+        "圆圆",
+    ]
+    for name in known_names:
+        if name in text:
+            names.append(name)
+
+    if "Coco" in text:
+        names.append("Coco老师")
+    if "恐龙" in text:
+        owner = title_prefix or "孩子"
+        names.append(f"{owner}的恐龙")
+
+    return "、".join(dict.fromkeys(name for name in names if name))
+
+
+def infer_scene(section: Section, title: str, text: str) -> str:
+    explicit_scene = extract_field(section.lines, "场景")
+    if explicit_scene:
+        return explicit_scene
+
+    story_names = re.findall(r"《([^》]+)》", text)
+    if section.section_kind == "lettered_growth":
+        if story_names:
+            return "三年成长弧线素材，串联" + "、".join(f"《{name}》" for name in dict.fromkeys(story_names[:5])) + "等课堂片段。"
+        return "三年成长弧线素材，记录同一个孩子或群体在多个课堂片段中的持续发展。"
+
+    if section.section_kind == "potential":
+        title_prefix = re.split(r"和|——|-", title, maxsplit=1)[0].strip()
+        if "恐龙" in text and title_prefix:
+            return f"课堂观察素材，{title_prefix}在课堂中带恐龙并借恐龙发言。"
+        if "每一节课" in text or "发言" in text:
+            return f"课堂观察素材，{title}相关的反复出现瞬间。"
+
+    return ""
+
+
+def infer_theme(section: Section, title: str) -> str:
+    theme = extract_field(section.lines, "主题")
+    if theme:
+        return theme
+    service_theme = extract_field(section.lines, "可服务的主题")
+    if service_theme:
+        return service_theme
+    potential = extract_field(section.lines, "为什么有潜力")
+    if potential:
+        return potential
+    return ""
+
+
+def infer_tags(section: Section, theme: str) -> str:
+    tags = normalize_tags(extract_field(section.lines, "标签"))
+    if tags:
+        return tags
+    service_theme = extract_field(section.lines, "可服务的主题")
+    if service_theme:
+        return normalize_topic_tags(service_theme)
+    if theme:
+        return normalize_topic_tags(theme)
+    return ""
 
 
 def infer_products(title: str, scene: str, theme: str, tags: str, summary: str) -> list[str]:
@@ -198,6 +358,8 @@ def infer_products(title: str, scene: str, theme: str, tags: str, summary: str) 
         "身份",
         "本质",
         "成长弧线",
+        "过渡客体",
+        "内心世界",
     ]
     trial_keywords = [
         "开场",
@@ -227,6 +389,8 @@ def infer_products(title: str, scene: str, theme: str, tags: str, summary: str) 
         "情绪",
         "害羞",
         "被遗忘",
+        "发声",
+        "玩具",
     ]
 
     if any(keyword in haystack for keyword in research_keywords):
@@ -265,21 +429,25 @@ def section_id(age: str, section: Section, fallback_index: int) -> str:
     number_match = re.match(r"^(\d+)\.", section.heading)
     if number_match:
         index = int(number_match.group(1))
+    elif potential_match := re.match(r"^P(\d+)\.", section.heading):
+        index = int(potential_match.group(1))
     else:
         index = fallback_index
-    return f"course_material_{age_part}_{index:03d}"
+    return f"course_material_{section.section_kind}_{age_part}_{index:03d}"
 
 
 def material_text(section: Section) -> str:
     return "\n".join(section.lines).strip()
 
 
-def convert_section(section: Section, age: str, index: int) -> tuple[dict[str, str] | None, dict[str, str] | None]:
+def convert_section(section: Section, default_age: str, index: int) -> tuple[dict[str, str] | None, dict[str, str] | None]:
     title = normalize_title(section.heading)
-    scene = extract_field(section.lines, "场景")
-    main_characters = extract_field(section.lines, "主角")
-    theme = extract_field(section.lines, "主题")
-    tags = normalize_tags(extract_field(section.lines, "标签"))
+    text = material_text(section)
+    age = infer_age_from_section(section, default_age)
+    scene = infer_scene(section, title, text)
+    main_characters = extract_field(section.lines, "主角") or extract_named_characters(text, title)
+    theme = infer_theme(section, title)
+    tags = infer_tags(section, theme)
     summary = summarize(section.lines, title)
     products = infer_products(title, scene, theme, tags, summary)
 
@@ -298,9 +466,7 @@ def convert_section(section: Section, age: str, index: int) -> tuple[dict[str, s
     }
 
     reasons: list[str] = []
-    if section.section_kind != "numbered":
-        reasons.append("非编号故事卡，可能跨越多个场景或年龄段")
-    if age not in ALLOWED_AGES:
+    if not validate_age_field(age):
         reasons.append("年龄段缺失或不在允许枚举内")
     for field in ["标题", "素材原文", "场景", "主角", "主题", "标签", "适合产品", "摘要"]:
         if not row[field]:
@@ -358,9 +524,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--age",
-        choices=sorted(ALLOWED_AGES),
         default=None,
-        help="Age band to use when it cannot be inferred from the filename.",
+        help="Age band(s) to use when they cannot be inferred, e.g. 5-6岁 or '3-4岁；4-5岁；5-6岁'.",
     )
     return parser.parse_args(argv)
 

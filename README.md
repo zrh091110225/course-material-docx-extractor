@@ -64,7 +64,34 @@ Allowed age bands:
 
 ## Expected DOCX Format
 
-Best results come from `.docx` files where each material starts with a numbered heading:
+The extractor supports three structures.
+
+### Structure 1: Growth Line
+
+```text
+A. 年糕这三年——一个孩子怎么慢慢学会"判断"
+主题:5 岁的伦理学
+...
+可服务的主题:儿童伦理判断力的发展 / ...
+标签:#年糕弧线 #判断力 #儿童哲学 #伦理学
+```
+
+This structure is treated as a multi-year arc. The extractor can infer multiple age bands such as `3-4岁；4-5岁；5-6岁`.
+
+### Structure 2: Potential Material
+
+```text
+P1. 跳跳和他的恐龙——"你是想听我的想法,还是恐龙的想法?"
+素材瞬间:
+...
+为什么有潜力:...
+待补访:...
+可服务的主题:5 岁男孩的内心世界 / 过渡客体 / 玩具如何替孩子发声
+```
+
+This structure is treated as a promising material draft. The extractor derives scene, main character, theme, tags, age band, product fit, and summary from the labeled sections.
+
+### Structure 3: Story Card
 
 ```text
 01. 标题
@@ -76,6 +103,21 @@ Best results come from `.docx` files where each material starts with a numbered 
 ```
 
 Sections that are missing required fields, span multiple ages/scenes, or cannot be assigned a clear product fit are written to the manual-review files instead of the success CSV.
+
+## LLM Refinement
+
+Agents may use LLM judgment after script extraction to refine semantic fields, especially for Structure 1 and Structure 2.
+
+Good LLM refinement targets:
+
+- `场景`: summarize into a concise factual scene, without inventing a lesson name.
+- `主角`: infer from the title and repeated named subjects.
+- `主题`: use `主题` or `可服务的主题`.
+- `标签`: derive from explicit tags or service themes.
+- `摘要`: write a concise factual summary from the original material.
+- `适合产品`: choose only from `线下会员新班`、`抓马学习研究室`、`开放日`、`体验课`.
+
+Do not let the LLM rewrite `素材原文`; keep it verbatim.
 
 ## Dependencies
 

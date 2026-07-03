@@ -27,17 +27,45 @@ The script writes:
 
 ## Expected Input
 
-The strongest input format is a Word document where each material starts with a numbered heading such as `01. 标题`, followed by explicit field lines:
+The extractor supports three source structures.
+
+### Structure 1: Growth Line
 
 ```text
-场景：...
-主角：...
-主题：...
+A. 年糕这三年——一个孩子怎么慢慢学会"判断"
+主题:5 岁的伦理学
 ...
-标签：#标签1 #标签2
+可服务的主题:儿童伦理判断力的发展 / ...
+标签:#年糕弧线 #判断力 #儿童哲学 #伦理学
 ```
 
-The script also detects growth-line sections starting with `A. 标题`, but those usually go to manual review because they often span multiple ages and lack one clear scene.
+Use this for multi-year child or group development arcs. The script infers a growth-arc scene, extracts the main character from the title/content, and can assign multiple age bands such as `3-4岁；4-5岁；5-6岁`.
+
+### Structure 2: Potential Material
+
+```text
+P1. 跳跳和他的恐龙——"你是想听我的想法,还是恐龙的想法?"
+素材瞬间:
+...
+为什么有潜力:...
+待补访:...
+可服务的主题:5 岁男孩的内心世界 / 过渡客体 / 玩具如何替孩子发声
+```
+
+Use this for promising but not fully formalized material. The script derives scene, main character, theme, tags, age band, product fit, and summary from the labeled sections.
+
+### Structure 3: Story Card
+
+```text
+01. 鸭妈妈的向日葵
+场景：3-4 岁课堂,《丑小鸭》延伸课。
+主角：小番茄、鸭妈妈(老师扮演)
+主题：3 岁的孩子能不能听懂大人不想说的那种孤独
+...
+标签：#共情早发生 #儿童反向照顾大人 #花的意象
+```
+
+Use this for the most reliable extraction. Explicit `场景`、`主角`、`主题`、`标签` values are preferred over inferred values.
 
 ## Field Rules
 
@@ -55,6 +83,19 @@ Use these enumerations:
 `素材原文` must keep the complete material block, including title, explicit fields, body, and tags.
 
 `检索文本` is built by joining title, scene, main characters, theme, tags, age, product values, and summary.
+
+## LLM Refinement
+
+After running the script, an agent may use LLM judgment to refine semantic fields for Structures 1 and 2:
+
+- refine `场景` into one concise sentence without inventing a specific lesson name
+- refine `主角` from the title and repeated named subjects
+- refine `主题` from `主题` or `可服务的主题`
+- derive `标签` from `标签` or `可服务的主题`
+- write `摘要` from the source material, keeping it factual and concise
+- choose `适合产品` only from the allowed enumeration
+
+Do not let the LLM change `素材原文`. Keep it verbatim.
 
 ## Ambiguity Policy
 

@@ -1,12 +1,14 @@
 # Course Material DOCX Extractor
 
-Codex skill for extracting structured Chinese course-material records from one `.docx` file into CSV.
+Codex skill for extracting structured Chinese course-material records from one `.docx` file with an LLM-assisted, validation-first workflow.
 
-It produces:
+The safest flow is:
 
-- `course_materials_extracted.csv`: records with all required fields.
-- `course_materials_manual_review.csv`: ambiguous records for human handling.
-- `course_materials_manual_review.md`: readable manual-review list.
+1. Split the `.docx` into LLM tasks.
+2. Let an agent/LLM fill structured JSON results.
+3. Validate the LLM output and generate CSV files.
+
+The scripts do not call any model directly, so the skill does not depend on an SDK, API key, network access, or a specific model name.
 
 ## Install For Codex
 
@@ -22,8 +24,6 @@ Restart Codex or start a new thread so the skill list reloads.
 
 ## Verify Installation
 
-The skill is installed correctly when this file exists:
-
 ```bash
 test -f "${CODEX_HOME:-$HOME/.codex}/skills/course-material-docx-extractor/SKILL.md"
 ```
@@ -35,36 +35,64 @@ python3 /path/to/skill-creator/scripts/quick_validate.py \
   "${CODEX_HOME:-$HOME/.codex}/skills/course-material-docx-extractor"
 ```
 
-## Use The Skill
-
-In Codex, ask for:
-
-```text
-Use $course-material-docx-extractor to extract a course-material CSV from this .docx file.
-```
-
-Direct script usage:
+## Step 1: Generate LLM Tasks
 
 ```bash
 cd "${CODEX_HOME:-$HOME/.codex}/skills/course-material-docx-extractor"
 python3 scripts/extract_course_materials.py INPUT.docx --out-dir OUTPUT_DIR
 ```
 
-If the age band cannot be inferred from the filename, pass it explicitly:
+If the filename does not contain an age hint, pass one:
 
 ```bash
-python3 scripts/extract_course_materials.py INPUT.docx --age 4-5岁 --out-dir OUTPUT_DIR
+python3 scripts/extract_course_materials.py INPUT.docx --age 5-6岁 --out-dir OUTPUT_DIR
 ```
 
-Allowed age bands:
+This writes:
 
-```text
-3-4岁, 4-5岁, 5-6岁, 6-7岁, 5-7岁, 7-8岁, 7-9岁, 9-11岁
+- `llm_tasks.jsonl`: one task per material block, with a ready-to-send prompt.
+- `sections.jsonl`: raw section manifest for audit/debugging.
+- `llm_prompt.md`: reusable prompt template.
+- `llm_results.jsonl`: empty file to fill with LLM results.
+
+## Step 2: Fill LLM Results
+
+For each line in `llm_tasks.jsonl`, send the `prompt` value to an LLM.
+
+Write one JSON object per line to `llm_results.jsonl`.
+
+Success example:
+
+```json
+{"task_id":"numbered_card_001","result":{"status":"success","id":"numbered_card_001","标题":"鸭妈妈的向日葵","素材原文":"...","场景":"3-4 岁课堂,《丑小鸭》延伸课。","主角":"小番茄、鸭妈妈(老师扮演)","主题":"3 岁的孩子能不能听懂大人不想说的那种孤独","标签":"#共情早发生；#儿童反向照顾大人；#花的意象","年龄段":"3-4岁","适合产品":"线下会员新班；开放日","摘要":"..."}}
 ```
 
-## Expected DOCX Format
+Manual-review example:
 
-The extractor supports three structures.
+```json
+{"task_id":"potential_001","result":{"status":"manual_review","标题":"跳跳和他的恐龙","reason":"适合产品无法明确判断","素材原文":"..."}}
+```
+
+The validator also accepts a direct result object as long as it contains `task_id`.
+
+## Step 3: Validate And Write CSV
+
+```bash
+python3 scripts/validate_llm_results.py \
+  --tasks OUTPUT_DIR/llm_tasks.jsonl \
+  --results OUTPUT_DIR/llm_results.jsonl \
+  --out-dir OUTPUT_DIR
+```
+
+This writes:
+
+- `course_materials_extracted.csv`
+- `course_materials_manual_review.csv`
+- `course_materials_manual_review.md`
+
+## Supported Source Structures
+
+The splitter recognizes three heading styles:
 
 ### Structure 1: Growth Line
 
@@ -75,8 +103,6 @@ A. 年糕这三年——一个孩子怎么慢慢学会"判断"
 可服务的主题:儿童伦理判断力的发展 / ...
 标签:#年糕弧线 #判断力 #儿童哲学 #伦理学
 ```
-
-This structure is treated as a multi-year arc. The extractor can infer multiple age bands such as `3-4岁；4-5岁；5-6岁`.
 
 ### Structure 2: Potential Material
 
@@ -89,36 +115,43 @@ P1. 跳跳和他的恐龙——"你是想听我的想法,还是恐龙的想法?"
 可服务的主题:5 岁男孩的内心世界 / 过渡客体 / 玩具如何替孩子发声
 ```
 
-This structure is treated as a promising material draft. The extractor derives scene, main character, theme, tags, age band, product fit, and summary from the labeled sections.
-
 ### Structure 3: Story Card
 
 ```text
-01. 标题
-场景：...
-主角：...
-主题：...
-正文...
-标签：#标签1 #标签2
+01. 鸭妈妈的向日葵
+场景：3-4 岁课堂,《丑小鸭》延伸课。
+主角：小番茄、鸭妈妈(老师扮演)
+主题：3 岁的孩子能不能听懂大人不想说的那种孤独
+...
+标签：#共情早发生 #儿童反向照顾大人 #花的意象
 ```
 
-Sections that are missing required fields, span multiple ages/scenes, or cannot be assigned a clear product fit are written to the manual-review files instead of the success CSV.
+## Validation Boundary
 
-## LLM Refinement
+`validate_llm_results.py` does not trust the LLM blindly.
 
-Agents may use LLM judgment after script extraction to refine semantic fields, especially for Structure 1 and Structure 2.
+Successful rows are rejected into manual review when:
 
-Good LLM refinement targets:
+- required fields are empty
+- `素材原文` is not an exact match for the original task text
+- `年龄段` contains values outside the allowed list
+- `适合产品` contains values outside the allowed list
+- the result is malformed, missing, or marked `manual_review`
 
-- `场景`: summarize into a concise factual scene, without inventing a lesson name.
-- `主角`: infer from the title and repeated named subjects.
-- `主题`: use `主题` or `可服务的主题`.
-- `标签`: derive from explicit tags or service themes.
-- `摘要`: write a concise factual summary from the original material.
-- `适合产品`: choose only from `线下会员新班`、`抓马学习研究室`、`开放日`、`体验课`.
+The validator builds `检索文本` itself from the approved fields.
 
-Do not let the LLM rewrite `素材原文`; keep it verbatim.
+Allowed age bands:
+
+```text
+3-4岁, 4-5岁, 5-6岁, 6-7岁, 5-7岁, 7-8岁, 7-9岁, 9-11岁
+```
+
+Allowed products:
+
+```text
+线下会员新班, 抓马学习研究室, 开放日, 体验课
+```
 
 ## Dependencies
 
-The extractor uses only the Python standard library. No `python-docx`, Pandoc, or platform-specific `textutil` dependency is required.
+The extractor and validator use only the Python standard library. No `python-docx`, Pandoc, OpenAI SDK, or platform-specific `textutil` dependency is required.

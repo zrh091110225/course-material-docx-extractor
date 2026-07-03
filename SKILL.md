@@ -1,109 +1,94 @@
 ---
 name: course-material-docx-extractor
-description: Extract structured Chinese course-material records from a single .docx file into CSV, with a manual-review list for ambiguous records. Use when the user has one Word document containing story cards or course-material sections and wants fields such as 标题、素材原文、场景、主角、主题、标签、年龄段、适合产品、摘要、检索文本.
+description: Extract structured Chinese course-material records from a single .docx file using an LLM-assisted, validation-first workflow. Use when the user has one Word document containing story cards, potential material, or growth-line course-material sections and wants CSV fields such as 标题、素材原文、场景、主角、主题、标签、年龄段、适合产品、摘要、检索文本.
 ---
 
 # Course Material DOCX Extractor
 
 ## Workflow
 
-Use `scripts/extract_course_materials.py` for deterministic extraction from one `.docx` file.
+Use a two-step flow. The scripts do not call any model or require API keys.
+
+Step 1: split the `.docx` into LLM tasks.
 
 ```bash
 python3 scripts/extract_course_materials.py INPUT.docx --out-dir OUTPUT_DIR
 ```
 
-If the age cannot be inferred from the filename, pass it explicitly:
+This writes:
+
+- `llm_tasks.jsonl`: one task per source material block, including a ready-to-send prompt.
+- `sections.jsonl`: raw section manifest for audit.
+- `llm_prompt.md`: reusable prompt template.
+- `llm_results.jsonl`: empty file to fill with LLM results.
+
+Step 2: have the agent/LLM process every task and write `llm_results.jsonl`.
+
+Each result line may use either shape:
+
+```json
+{"task_id":"numbered_card_001","result":{"status":"success","id":"numbered_card_001","标题":"...","素材原文":"...","场景":"...","主角":"...","主题":"...","标签":"...","年龄段":"3-4岁","适合产品":"线下会员新班；开放日","摘要":"..."}}
+```
+
+```json
+{"task_id":"potential_001","result":{"status":"manual_review","标题":"...","reason":"适合产品无法明确判断","素材原文":"..."}}
+```
+
+Step 3: validate LLM output and write CSV files.
 
 ```bash
-python3 scripts/extract_course_materials.py INPUT.docx --age 4-5岁 --out-dir OUTPUT_DIR
+python3 scripts/validate_llm_results.py \
+  --tasks OUTPUT_DIR/llm_tasks.jsonl \
+  --results OUTPUT_DIR/llm_results.jsonl \
+  --out-dir OUTPUT_DIR
 ```
 
-The script writes:
+This writes:
 
-- `course_materials_extracted.csv`: rows with all required fields.
-- `course_materials_manual_review.csv`: records with unclear or missing required information.
-- `course_materials_manual_review.md`: the same manual-review list in a readable format.
+- `course_materials_extracted.csv`
+- `course_materials_manual_review.csv`
+- `course_materials_manual_review.md`
 
-## Expected Input
+## Supported Structures
 
-The extractor supports three source structures.
+The splitter recognizes these headings:
 
-### Structure 1: Growth Line
+- Structure 1: `A. 年糕这三年——...` as `lettered_growth`
+- Structure 2: `P1. 跳跳和他的恐龙——...` as `potential`
+- Structure 3: `01. 鸭妈妈的向日葵` as `numbered_card`
+
+The LLM receives the structure type, title hint, age hint, and verbatim source material.
+
+## LLM Rules
+
+The prompt in `llm_tasks.jsonl` instructs the LLM to:
+
+- output JSON only
+- preserve `素材原文` exactly
+- extract or infer `场景`、`主角`、`主题`、`标签`、`年龄段`、`适合产品`、`摘要`
+- output `manual_review` when key information is unclear
+- avoid generating `检索文本`; the validator builds it
+
+Allowed `年龄段` values:
 
 ```text
-A. 年糕这三年——一个孩子怎么慢慢学会"判断"
-主题:5 岁的伦理学
-...
-可服务的主题:儿童伦理判断力的发展 / ...
-标签:#年糕弧线 #判断力 #儿童哲学 #伦理学
+3-4岁, 4-5岁, 5-6岁, 6-7岁, 5-7岁, 7-8岁, 7-9岁, 9-11岁
 ```
 
-Use this for multi-year child or group development arcs. The script infers a growth-arc scene, extracts the main character from the title/content, and can assign multiple age bands such as `3-4岁；4-5岁；5-6岁`.
-
-### Structure 2: Potential Material
+Allowed `适合产品` values:
 
 ```text
-P1. 跳跳和他的恐龙——"你是想听我的想法,还是恐龙的想法?"
-素材瞬间:
-...
-为什么有潜力:...
-待补访:...
-可服务的主题:5 岁男孩的内心世界 / 过渡客体 / 玩具如何替孩子发声
+线下会员新班, 抓马学习研究室, 开放日, 体验课
 ```
 
-Use this for promising but not fully formalized material. The script derives scene, main character, theme, tags, age band, product fit, and summary from the labeled sections.
+## Validation Rules
 
-### Structure 3: Story Card
+`validate_llm_results.py` is the trust boundary. It rejects successful rows when:
 
-```text
-01. 鸭妈妈的向日葵
-场景：3-4 岁课堂,《丑小鸭》延伸课。
-主角：小番茄、鸭妈妈(老师扮演)
-主题：3 岁的孩子能不能听懂大人不想说的那种孤独
-...
-标签：#共情早发生 #儿童反向照顾大人 #花的意象
-```
+- required fields are empty
+- `素材原文` does not exactly match the original task material
+- `年龄段` contains values outside the allowed list
+- `适合产品` contains values outside the allowed list
+- the LLM result is missing, malformed, or marked `manual_review`
 
-Use this for the most reliable extraction. Explicit `场景`、`主角`、`主题`、`标签` values are preferred over inferred values.
-
-## Field Rules
-
-The output CSV keeps this fixed column order:
-
-```text
-id,标题,素材原文,场景,主角,主题,标签,年龄段,适合产品,摘要,检索文本
-```
-
-Use these enumerations:
-
-- `适合产品`: `线下会员新班`、`抓马学习研究室`、`开放日`、`体验课`
-- `年龄段`: `3-4岁`、`4-5岁`、`5-6岁`、`6-7岁`、`5-7岁`、`7-8岁`、`7-9岁`、`9-11岁`
-
-`素材原文` must keep the complete material block, including title, explicit fields, body, and tags.
-
-`检索文本` is built by joining title, scene, main characters, theme, tags, age, product values, and summary.
-
-## LLM Refinement
-
-After running the script, an agent may use LLM judgment to refine semantic fields for Structures 1 and 2:
-
-- refine `场景` into one concise sentence without inventing a specific lesson name
-- refine `主角` from the title and repeated named subjects
-- refine `主题` from `主题` or `可服务的主题`
-- derive `标签` from `标签` or `可服务的主题`
-- write `摘要` from the source material, keeping it factual and concise
-- choose `适合产品` only from the allowed enumeration
-
-Do not let the LLM change `素材原文`. Keep it verbatim.
-
-## Ambiguity Policy
-
-Do not force records into the success CSV when required fields are unclear. Put them in the manual-review files with a short reason.
-
-Common manual-review cases:
-
-- missing `场景`、`主角`、`主题`、or `标签`
-- age cannot be inferred and `--age` was not provided
-- the section spans multiple ages or multiple scenes
-- product fit is too ambiguous to assign from content
+Rejected rows go to the manual-review outputs with a reason.

@@ -90,6 +90,8 @@ This writes:
 - `course_materials_manual_review.csv`
 - `course_materials_manual_review.md`
 
+The validator also runs a strict CSV import check before exiting successfully, so the generated CSV can be uploaded to strict parsers such as Coze knowledge-base tables.
+
 ## Supported Source Structures
 
 The splitter recognizes three heading styles:
@@ -133,12 +135,23 @@ P1. 跳跳和他的恐龙——"你是想听我的想法,还是恐龙的想法?"
 Successful rows are rejected into manual review when:
 
 - required fields are empty
+- `id` duplicates an earlier accepted row
 - `素材原文` is not an exact match for the original task text
 - `年龄段` contains values outside the allowed list
 - `适合产品` contains values outside the allowed list
 - the result is malformed, missing, or marked `manual_review`
 
 The validator builds `检索文本` itself from the approved fields.
+
+Generated CSV files must pass these import-safety checks:
+
+- exact column order: `id`, `标题`, `素材原文`, `场景`, `主角`, `主题`, `标签`, `年龄段`, `适合产品`, `摘要`, `检索文本`
+- UTF-8 with BOM, comma delimiter, `\n` line endings
+- every data record has exactly the same number of columns as the header
+- fields containing commas, line breaks, or English double quotes are quoted according to standard CSV rules
+- no bare English double quote `"` may appear inside an unquoted field
+
+If strict CSV validation fails, `validate_llm_results.py` exits with code `3` and prints the parse reason.
 
 Allowed age bands:
 

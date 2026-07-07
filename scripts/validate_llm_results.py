@@ -32,6 +32,10 @@ PRODUCT_ORDER = ["线下会员新班", "抓马学习研究室", "开放日", "�
 ALLOWED_PRODUCTS = set(PRODUCT_ORDER)
 
 
+class StrictCsvError(ValueError):
+    pass
+
+
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     with path.open(encoding="utf-8") as input_file:
@@ -163,9 +167,81 @@ def validate_result(task_id: str, result: dict[str, Any], source: dict[str, Any]
 def write_csv(path: Path, rows: list[dict[str, str]], fieldnames: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8-sig", newline="") as output:
-        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer = csv.DictWriter(output, fieldnames=fieldnames, lineterminator="\n", quoting=csv.QUOTE_MINIMAL)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def check_strict_csv(path: Path, fieldnames: list[str]) -> None:
+    raw = path.read_text(encoding="utf-8-sig")
+    errors: list[str] = []
+    in_quotes = False
+    at_field_start = True
+    record = 1
+    line = 1
+    col = 0
+    index = 0
+
+    while index < len(raw):
+        char = raw[index]
+        if char == "\n":
+            line += 1
+            col = 0
+        else:
+            col += 1
+
+        if in_quotes:
+            if char == '"':
+                if index + 1 < len(raw) and raw[index + 1] == '"':
+                    index += 1
+                    col += 1
+                else:
+                    in_quotes = False
+            index += 1
+            continue
+
+        if char == '"':
+            if at_field_start:
+                in_quotes = True
+            else:
+                errors.append(f"record {record}, line {line}, column {col}: bare quote in non-quoted field")
+            at_field_start = False
+            index += 1
+            continue
+
+        if char == ",":
+            at_field_start = True
+            index += 1
+            continue
+        if char in "\r\n":
+            record += 1
+            at_field_start = True
+            index += 1
+            continue
+        at_field_start = False
+        index += 1
+
+    if in_quotes:
+        errors.append("unterminated quoted field")
+
+    with path.open(encoding="utf-8-sig", newline="") as input_file:
+        reader = csv.reader(input_file, strict=True)
+        try:
+            rows = list(reader)
+        except csv.Error as exc:
+            errors.append(f"csv parser error: {exc}")
+            rows = []
+
+    if rows:
+        if rows[0] != fieldnames:
+            errors.append(f"CSV header mismatch: {rows[0]!r}")
+        expected_width = len(fieldnames)
+        for idx, row in enumerate(rows[1:], start=2):
+            if len(row) != expected_width:
+                errors.append(f"line {idx}: expected {expected_width} columns, got {len(row)}")
+
+    if errors:
+        raise StrictCsvError(f"{path} is not strict CSV: " + "; ".join(errors[:5]))
 
 
 def write_manual_md(path: Path, rows: list[dict[str, str]]) -> None:
@@ -217,6 +293,7 @@ def main(argv: list[str] | None = None) -> int:
         results_by_task[task_id] = result
 
     rows: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
     manual_rows: list[dict[str, str]] = result_errors
     for task_id, source in sources.items():
         result = results_by_task.get(task_id)
@@ -225,19 +302,32 @@ def main(argv: list[str] | None = None) -> int:
             continue
         row, manual_row = validate_result(task_id, result, source)
         if row:
-            rows.append(row)
+            if row["id"] in seen_ids:
+                manual_rows.append(make_manual(source, row["标题"], f"id 重复：{row['id']}", str(source.get("material_text", ""))))
+            else:
+                seen_ids.add(row["id"])
+                rows.append(row)
         if manual_row:
             manual_rows.append(manual_row)
 
-    write_csv(out_dir / "course_materials_extracted.csv", rows, FIELDS)
-    write_csv(out_dir / "course_materials_manual_review.csv", manual_rows, MANUAL_FIELDS)
+    extracted_csv = out_dir / "course_materials_extracted.csv"
+    manual_csv = out_dir / "course_materials_manual_review.csv"
+    write_csv(extracted_csv, rows, FIELDS)
+    write_csv(manual_csv, manual_rows, MANUAL_FIELDS)
+    try:
+        check_strict_csv(extracted_csv, FIELDS)
+        check_strict_csv(manual_csv, MANUAL_FIELDS)
+    except StrictCsvError as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
     write_manual_md(out_dir / "course_materials_manual_review.md", manual_rows)
 
     print(f"validated_tasks={len(sources)}")
     print(f"extracted_rows={len(rows)}")
     print(f"manual_rows={len(manual_rows)}")
-    print(out_dir / "course_materials_extracted.csv")
-    print(out_dir / "course_materials_manual_review.csv")
+    print(f"strict_csv=passed")
+    print(extracted_csv)
+    print(manual_csv)
     print(out_dir / "course_materials_manual_review.md")
     return 0
 
